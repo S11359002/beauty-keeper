@@ -4,8 +4,26 @@ const statusName={UNOPENED:'未開封',OPENED:'使用中',FINISHED:'已用完',D
 const intentName={YES:'願意回購',NO:'不想回購',UNSURE:'還不確定'};
 const money=n=>'NT$ '+Number(n||0).toLocaleString('zh-TW',{maximumFractionDigits:0});
 const today=()=>new Date().toLocaleDateString('en-CA');const month=()=>today().slice(0,7);
-const api=async(path,opts={})=>{const token=localStorage.getItem('bk_token');const r=await fetch('/api'+path,{...opts,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...opts.headers}});const data=await r.json();if(!r.ok)throw Error(data.error||'操作失敗');return data};
-const post=(p,d)=>api(p,{method:'POST',body:JSON.stringify(d)});const patch=(p,d)=>api(p,{method:'PATCH',body:JSON.stringify(d)});
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
+const api = async (path, opts = {}) => {
+  const token = localStorage.getItem('bk_token');
+
+  const r = await fetch(API_BASE + '/api' + path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: 'Bearer ' + token } : {}),
+      ...opts.headers
+    }
+  });
+
+  const data = await r.json();
+
+  if (!r.ok) throw Error(data.error || '操作失敗');
+
+  return data;
+};const post=(p,d)=>api(p,{method:'POST',body:JSON.stringify(d)});const patch=(p,d)=>api(p,{method:'PATCH',body:JSON.stringify(d)});
 function expiryOf(i){const dates=[];if(i.expiry_date)dates.push(new Date(i.expiry_date+'T12:00:00'));if(i.opened_at&&i.pao_months){const d=new Date(i.opened_at+'T12:00:00');d.setMonth(d.getMonth()+Number(i.pao_months));dates.push(d)}if(!dates.length)return null;return new Date(Math.min(...dates.map(d=>d.getTime())))}
 function daysLeft(i){const d=expiryOf(i);if(!d)return null;const t=new Date(today()+'T12:00:00');return Math.round((d-t)/86400000)}
 function Tag({children,tone='neutral'}){return <span className={'tag '+tone}>{children}</span>}
