@@ -1,18 +1,89 @@
+
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-const app=express();app.use(cors());app.use(express.json({limit:'100kb'}));
-const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
-const secret=process.env.JWT_SECRET;if(!secret) throw Error('請設定 JWT_SECRET');
-const q=(sql,args=[])=>pool.query(sql,args);
-const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
-const auth=(req,res,next)=>{try{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const data=jwt.verify(token,secret);req.user=data.sub;next()}catch{res.status(401).json({error:'請先登入'})}};
-const fail=(res,msg,status=400)=>res.status(status).json({error:msg});
-const validDate=x=>!x||/^\d{4}-\d{2}-\d{2}$/.test(x);
-app.post('/api/auth/register',wrap(async(req,res)=>{const {email,password}=req.body;if(!/^\S+@\S+\.\S+$/.test(email||'')||!password||password.length<8||password.length>72)return fail(res,'請輸入有效 Email 與 8～72 字元密碼');try{const hash=await bcrypt.hash(password,10);const r=await q('INSERT INTO users(email,password_hash) VALUES($1,$2) RETURNING id,email',[email.toLowerCase(),hash]);res.status(201).json({token:jwt.sign({sub:r.rows[0].id},secret,{expiresIn:'2h'}),email:r.rows[0].email})}catch(e){if(e.code==='23505')return fail(res,'Email 已被註冊',409);throw e}}));
+import { rateLimit } from 'express-rate-limit';
+
+const app = express();
+
+// 限制允許連線的前端網址
+const allowedOrigins = (
+  process.env.CLIENT_ORIGIN || 'http://localhost:5173'
+)
+  .split(',')
+  .map(origin => origin.trim());
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('不允許的網站來源'));
+  }
+}));
+
+app.use(express.json({ limit: '100kb' }));
+
+// PostgreSQL 連線
+if (!process.env.DATABASE_URL) {
+  throw new Error('請設定 DATABASE_URL');
+}
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 5,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000
+});
+
+// JWT 安全設定
+const secret = process.env.JWT_SECRET;
+
+if (!secret || secret.length < 32) {
+  throw new Error('JWT_SECRET 必須至少 32 個字元');
+}
+
+const q = (sql, args = []) => pool.query(sql, args);
+
+const wrap = fn => (req, res, next) =>
+  Promise.resolve(fn(req, res)).catch(next);
+
+const auth = (req, res, next) => {
+  try {
+    const token = (req.headers.authorization || '')
+      .replace(/^Bearer /, '');
+
+    const data = jwt.verify(token, secret);
+    req.user = data.sub;
+    next();
+  } catch {
+    res.status(401).json({ error: '請先登入' });
+  }
+};
+
+const fail = (res, msg, status = 400) =>
+  res.status(status).json({ error: msg });
+
+const validDate = x =>
+  !x || /^\d{4}-\d{2}-\d{2}$/.test(x);
+
+// 限制登入及註冊請求次數
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    error: '操作太頻繁，請稍後再試'
+  }
+});
+
+app.use('/api/auth', authLimiter);
+
+app.post('/api/auth/register',wrap(async(req,res)=>{const {email,password}=req.body;if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email||'')||!password||password.length<8||password.length>72)return fail(res,'請輸入有效 Email 與 8～72 字元密碼');try{const hash=await bcrypt.hash(password,10);const r=await q('INSERT INTO users(email,password_hash) VALUES($1,$2) RETURNING id,email',[email.toLowerCase(),hash]);res.status(201).json({token:jwt.sign({sub:r.rows[0].id},secret,{expiresIn:'2h'}),email:r.rows[0].email})}catch(e){if(e.code==='23505')return fail(res,'Email 已被註冊',409);throw e}}));
 app.post('/api/auth/login',wrap(async(req,res)=>{const r=await q('SELECT * FROM users WHERE email=$1',[(req.body.email||'').toLowerCase()]);if(!r.rows[0]||!await bcrypt.compare(req.body.password||'',r.rows[0].password_hash))return fail(res,'帳號或密碼錯誤',401);res.json({token:jwt.sign({sub:r.rows[0].id},secret,{expiresIn:'2h'}),email:r.rows[0].email})}));
 app.use('/api',auth);
 app.get('/api/catalog',wrap(async(req,res)=>{const [brands,categories,products]=await Promise.all([q('SELECT * FROM brands ORDER BY name'),q('SELECT * FROM categories ORDER BY name'),q('SELECT p.*,b.name brand,c.name category FROM products p JOIN brands b ON b.id=p.brand_id JOIN categories c ON c.id=p.category_id ORDER BY p.name')]);res.json({brands:brands.rows,categories:categories.rows,products:products.rows})}));
